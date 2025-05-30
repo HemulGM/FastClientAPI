@@ -166,8 +166,8 @@ type
     function Post<TResult: class, constructor>(const Path: string): TResult; overload;
     function PostForm<TResult: class, constructor; TParams: TMultipartFormData, constructor>(const Path: string; ParamProc: TProc<TParams>): TResult; overload;
   public
-    constructor Create; overload;
-    constructor Create(const AToken: string); overload;
+    constructor Create; overload; virtual;
+    constructor Create(const AToken: string); overload; virtual;
     destructor Destroy; override;
     property Token: string read FToken write SetToken;
     property BaseUrl: string read FBaseUrl write SetBaseUrl;
