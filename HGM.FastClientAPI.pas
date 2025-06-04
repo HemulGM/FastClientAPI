@@ -14,6 +14,10 @@ type
     RTTI: TRttiContext;
   end;
 
+  TFastMultipartFormData = class(TMultipartFormData)
+    constructor Create; virtual;
+  end;
+
 type
   TJSONParam = class
   private
@@ -77,6 +81,15 @@ type
     destructor Destroy; override;
   end;
 
+  TSimpleErrorResponse = class
+  private
+    FError: string;
+    FError_description: string;
+  public
+    property Error: string read FError write FError;
+    property ErrorDescription: string read FError_description write FError_description;
+  end;
+
   ExceptionAPI = class(Exception);
 
   ExceptionAPIRequest = class(ExceptionAPI)
@@ -135,6 +148,7 @@ type
     FConnectionTimeout: Integer;
     FSendTimeout: Integer;
     FResponseTimeout: Integer;
+    FNeedCheckToken: Boolean;
 
     procedure SetToken(const Value: string);
     procedure SetBaseUrl(const Value: string);
@@ -145,6 +159,7 @@ type
     procedure SetConnectionTimeout(const Value: Integer);
     procedure SetResponseTimeout(const Value: Integer);
     procedure SetSendTimeout(const Value: Integer);
+    procedure SetNeedCheckToken(const Value: Boolean);
   protected
     function GetHeaders: TNetHeaders; virtual;
     function GetClient: THTTPClient; virtual;
@@ -164,13 +179,14 @@ type
     function Post<TParams: TJSONParam>(const Path: string; ParamProc: TProc<TParams>; Response: TStream; Event: TReceiveDataCallback = nil): Boolean; overload;
     function Post<TResult: class, constructor; TParams: TJSONParam>(const Path: string; ParamProc: TProc<TParams>): TResult; overload;
     function Post<TResult: class, constructor>(const Path: string): TResult; overload;
-    function PostForm<TResult: class, constructor; TParams: TMultipartFormData, constructor>(const Path: string; ParamProc: TProc<TParams>): TResult; overload;
+    function PostForm<TResult: class, constructor; TParams: TFastMultipartFormData, constructor>(const Path: string; ParamProc: TProc<TParams>): TResult; overload;
   public
     constructor Create; overload; virtual;
     constructor Create(const AToken: string); overload; virtual;
     destructor Destroy; override;
     property Token: string read FToken write SetToken;
     property BaseUrl: string read FBaseUrl write SetBaseUrl;
+    property NeedCheckToken: Boolean read FNeedCheckToken write SetNeedCheckToken;
     property ProxySettings: TProxySettings read FProxySettings write SetProxySettings;
     /// <summary> Property to set/get the ConnectionTimeout. Value is in milliseconds.
     ///  -1 - Infinite timeout. 0 - platform specific timeout. Supported by Windows, Linux, Android platforms. </summary>
@@ -213,6 +229,7 @@ begin
   FResponseTimeout := TURLClient.DefaultResponseTimeout;
   FToken := '';
   FBaseUrl := '';
+  FNeedCheckToken := False;
 end;
 
 constructor TCustomAPI.Create(const AToken: string);
@@ -438,12 +455,14 @@ end;
 
 function TCustomAPI.GetRequestURL(const Path: string): string;
 begin
+  if Path.ToLower.StartsWith('http') then
+    Exit(Path);
   Result := FBaseURL + '/' + Path;
 end;
 
 procedure TCustomAPI.CheckAPI;
 begin
-  if FToken.IsEmpty then
+  if FNeedCheckToken and FToken.IsEmpty then
     raise ExceptionAPI.Create('Token is empty!');
   if FBaseUrl.IsEmpty then
     raise ExceptionAPI.Create('Base url is empty!');
@@ -474,8 +493,22 @@ begin
     try
       Error := TJson.JsonToObject<TErrorResponse>(ResponseText);
     except
-      Error := nil;
+      try
+        var SimpleError := TJson.JsonToObject<TSimpleErrorResponse>(ResponseText);
+        try
+          Error := TErrorResponse.Create;
+          Error.Error := TError.Create;
+          Error.Error.Message := SimpleError.Error;
+          Error.Error.Code := Code;
+          Error.Error.&Type := SimpleError.ErrorDescription;
+        finally
+          SimpleError.Free;
+        end;
+      except
+        Error := nil;
+      end;
     end;
+
     if Assigned(Error) and Assigned(Error.Error) then
       ParseAndRaiseError(Error.Error, Code)
     else
@@ -515,6 +548,11 @@ end;
 procedure TCustomAPI.SetCustomHeaders(const Value: TNetHeaders);
 begin
   FCustomHeaders := Value;
+end;
+
+procedure TCustomAPI.SetNeedCheckToken(const Value: Boolean);
+begin
+  FNeedCheckToken := Value;
 end;
 
 procedure TCustomAPI.SetProxySettings(const Value: TProxySettings);
@@ -770,6 +808,13 @@ begin
   if Assigned(FError) then
     FError.Free;
   inherited;
+end;
+
+{ TFastMultipartFormData }
+
+constructor TFastMultipartFormData.Create;
+begin
+  inherited Create(True);
 end;
 
 end.
