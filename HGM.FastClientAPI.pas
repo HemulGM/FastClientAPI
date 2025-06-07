@@ -140,7 +140,7 @@ type
   {$WARNINGS OFF}
   TCustomAPI = class
   private
-    FToken: string;
+    FAccessToken: string;
     FBaseUrl: string;
 
     FCustomHeaders: TNetHeaders;
@@ -149,8 +149,9 @@ type
     FSendTimeout: Integer;
     FResponseTimeout: Integer;
     FNeedCheckToken: Boolean;
+    FOnAuthErrorCallback: TFunc<Boolean>;
 
-    procedure SetToken(const Value: string);
+    procedure SetAccessToken(const Value: string);
     procedure SetBaseUrl(const Value: string);
     procedure ParseAndRaiseError(Error: TError; Code: Int64);
     procedure ParseError(const Code: Int64; const ResponseText: string);
@@ -160,6 +161,8 @@ type
     procedure SetResponseTimeout(const Value: Integer);
     procedure SetSendTimeout(const Value: Integer);
     procedure SetNeedCheckToken(const Value: Boolean);
+    procedure SetOnAuthErrorCallback(const Value: TFunc<Boolean>);
+    function CanRequery: Boolean;
   protected
     function GetHeaders: TNetHeaders; virtual;
     function GetClient: THTTPClient; virtual;
@@ -174,8 +177,10 @@ type
   public
     function Get<TResult: class, constructor>(const Path: string): TResult; overload;
     function Get<TResult: class, constructor; TParams: TJSONParam>(const Path: string; ParamProc: TProc<TParams>): TResult; overload;
-    procedure GetFile(const Path: string; Response: TStream); overload;
+    function GetFile(const Path: string; Response: TStream): Integer; overload;
     function Delete<TResult: class, constructor>(const Path: string): TResult; overload;
+    function Patch(const Path: string; Body: TJSONObject; Response: TStream; OnReceiveData: TReceiveDataCallback = nil): Integer; overload;
+    function Patch<TResult: class, constructor; TParams: TJSONParam>(const Path: string; ParamProc: TProc<TParams>): TResult; overload;
     function Post<TParams: TJSONParam>(const Path: string; ParamProc: TProc<TParams>; Response: TStream; Event: TReceiveDataCallback = nil): Boolean; overload;
     function Post<TResult: class, constructor; TParams: TJSONParam>(const Path: string; ParamProc: TProc<TParams>): TResult; overload;
     function Post<TResult: class, constructor>(const Path: string): TResult; overload;
@@ -184,9 +189,10 @@ type
     constructor Create; overload; virtual;
     constructor Create(const AToken: string); overload; virtual;
     destructor Destroy; override;
-    property Token: string read FToken write SetToken;
+    property AccessToken: string read FAccessToken write SetAccessToken;
     property BaseUrl: string read FBaseUrl write SetBaseUrl;
     property NeedCheckToken: Boolean read FNeedCheckToken write SetNeedCheckToken;
+    property OnAuthErrorCallback: TFunc<Boolean> read FOnAuthErrorCallback write SetOnAuthErrorCallback;
     property ProxySettings: TProxySettings read FProxySettings write SetProxySettings;
     /// <summary> Property to set/get the ConnectionTimeout. Value is in milliseconds.
     ///  -1 - Infinite timeout. 0 - platform specific timeout. Supported by Windows, Linux, Android platforms. </summary>
@@ -227,7 +233,7 @@ begin
   FConnectionTimeout := TURLClient.DefaultConnectionTimeout;
   FSendTimeout := TURLClient.DefaultSendTimeout;
   FResponseTimeout := TURLClient.DefaultResponseTimeout;
-  FToken := '';
+  FAccessToken := '';
   FBaseUrl := '';
   FNeedCheckToken := False;
 end;
@@ -235,7 +241,7 @@ end;
 constructor TCustomAPI.Create(const AToken: string);
 begin
   Create;
-  Token := AToken;
+  AccessToken := AToken;
 end;
 
 destructor TCustomAPI.Destroy;
@@ -255,6 +261,37 @@ begin
       Stream.WriteString(Body.ToJSON);
       Stream.Position := 0;
       Result := Client.Post(GetRequestURL(Path), Stream, Response, Headers).StatusCode;
+      if (Result = 401) and CanRequery then
+      begin
+        Response.Size := 0;
+        Result := Client.Post(GetRequestURL(Path), Stream, Response, Headers).StatusCode;
+      end;
+    finally
+      Client.OnReceiveData := nil;
+      Stream.Free;
+    end;
+  finally
+    Client.Free;
+  end;
+end;
+
+function TCustomAPI.Patch(const Path: string; Body: TJSONObject; Response: TStream; OnReceiveData: TReceiveDataCallback): Integer;
+begin
+  CheckAPI;
+  var Client := GetClient;
+  try
+    var Headers := GetHeaders + [TNetHeader.Create('Content-Type', 'application/json')];
+    var Stream := TStringStream.Create;
+    Client.ReceiveDataCallBack := OnReceiveData;
+    try
+      Stream.WriteString(Body.ToJSON);
+      Stream.Position := 0;
+      Result := Client.Patch(GetRequestURL(Path), Stream, Response, Headers).StatusCode;
+      if (Result = 401) and CanRequery then
+      begin
+        Response.Size := 0;
+        Result := Client.Patch(GetRequestURL(Path), Stream, Response, Headers).StatusCode;
+      end;
     finally
       Client.OnReceiveData := nil;
       Stream.Free;
@@ -270,6 +307,11 @@ begin
   var Client := GetClient;
   try
     Result := Client.Get(GetRequestURL(Path), Response, GetHeaders).StatusCode;
+    if (Result = 401) and CanRequery then
+    begin
+      Response.Size := 0;
+      Result := Client.Get(GetRequestURL(Path), Response, GetHeaders).StatusCode;
+    end;
   finally
     Client.Free;
   end;
@@ -281,6 +323,11 @@ begin
   var Client := GetClient;
   try
     Result := Client.Post(GetRequestURL(Path), Body, Response, GetHeaders).StatusCode;
+    if (Result = 401) and CanRequery then
+    begin
+      Response.Size := 0;
+      Result := Client.Post(GetRequestURL(Path), Body, Response, GetHeaders).StatusCode;
+    end;
   finally
     Client.Free;
   end;
@@ -292,6 +339,11 @@ begin
   var Client := GetClient;
   try
     Result := Client.Post(GetRequestURL(Path), TStream(nil), Response, GetHeaders).StatusCode;
+    if (Result = 401) and CanRequery then
+    begin
+      Response.Size := 0;
+      Result := Client.Post(GetRequestURL(Path), TStream(nil), Response, GetHeaders).StatusCode;
+    end;
   finally
     Client.Free;
   end;
@@ -305,6 +357,20 @@ begin
     if Assigned(ParamProc) then
       ParamProc(Params);
     Result := ParseResponse<TResult>(Post(Path, Params.JSON, Response), Response.DataString);
+  finally
+    Params.Free;
+    Response.Free;
+  end;
+end;
+
+function TCustomAPI.Patch<TResult, TParams>(const Path: string; ParamProc: TProc<TParams>): TResult;
+begin
+  var Response := TStringStream.Create('', TEncoding.UTF8);
+  var Params := TParams.Create;
+  try
+    if Assigned(ParamProc) then
+      ParamProc(Params);
+    Result := ParseResponse<TResult>(Patch(Path, Params.JSON, Response), Response.DataString);
   finally
     Params.Free;
     Response.Free;
@@ -353,6 +419,11 @@ begin
   var Client := GetClient;
   try
     Result := Client.Delete(GetRequestURL(Path), Response, GetHeaders).StatusCode;
+    if (Result = 401) and CanRequery then
+    begin
+      Response.Size := 0;
+      Result := Client.Delete(GetRequestURL(Path), Response, GetHeaders).StatusCode;
+    end;
   finally
     Client.Free;
   end;
@@ -424,13 +495,18 @@ begin
   Result.AcceptCharSet := 'utf-8';
 end;
 
-procedure TCustomAPI.GetFile(const Path: string; Response: TStream);
+function TCustomAPI.GetFile(const Path: string; Response: TStream): Integer;
 begin
   CheckAPI;
   var Client := GetClient;
   try
-    var Code := Client.Get(GetRequestURL(Path), Response, GetHeaders).StatusCode;
-    case Code of
+    Result := Client.Get(GetRequestURL(Path), Response, GetHeaders).StatusCode;
+    if (Result = 401) and CanRequery then
+    begin
+      Response.Size := 0;
+      Result := Client.Get(GetRequestURL(Path), Response, GetHeaders).StatusCode;
+    end;
+    case Result of
       200..299:
         ; {success}
     else
@@ -438,7 +514,7 @@ begin
       try
         Response.Position := 0;
         Strings.LoadFromStream(Response);
-        ParseError(Code, Strings.DataString);
+        ParseError(Result, Strings.DataString);
       finally
         Strings.Free;
       end;
@@ -450,7 +526,7 @@ end;
 
 function TCustomAPI.GetHeaders: TNetHeaders;
 begin
-  Result := [TNetHeader.Create('Authorization', 'Bearer ' + FToken)] + FCustomHeaders;
+  Result := [TNetHeader.Create('Authorization', 'Bearer ' + FAccessToken)] + FCustomHeaders;
 end;
 
 function TCustomAPI.GetRequestURL(const Path: string): string;
@@ -460,9 +536,16 @@ begin
   Result := FBaseURL + '/' + Path;
 end;
 
+function TCustomAPI.CanRequery: Boolean;
+begin
+  Result := Assigned(FOnAuthErrorCallback);
+  if Result then
+    Result := FOnAuthErrorCallback;
+end;
+
 procedure TCustomAPI.CheckAPI;
 begin
-  if FNeedCheckToken and FToken.IsEmpty then
+  if FNeedCheckToken and FAccessToken.IsEmpty then
     raise ExceptionAPI.Create('Token is empty!');
   if FBaseUrl.IsEmpty then
     raise ExceptionAPI.Create('Base url is empty!');
@@ -555,6 +638,11 @@ begin
   FNeedCheckToken := Value;
 end;
 
+procedure TCustomAPI.SetOnAuthErrorCallback(const Value: TFunc<Boolean>);
+begin
+  FOnAuthErrorCallback := Value;
+end;
+
 procedure TCustomAPI.SetProxySettings(const Value: TProxySettings);
 begin
   FProxySettings := Value;
@@ -570,9 +658,9 @@ begin
   FSendTimeout := Value;
 end;
 
-procedure TCustomAPI.SetToken(const Value: string);
+procedure TCustomAPI.SetAccessToken(const Value: string);
 begin
-  FToken := Value;
+  FAccessToken := Value;
 end;
 
 { ExceptionAPIRequest }
@@ -642,7 +730,12 @@ end;
 
 function TJSONParam.Add(const Key: string; const Value: TJSONParam): TJSONParam;
 begin
-  Add(Key, TJSONValue(Value.JSON.Clone));
+  try
+    Add(Key, Value.JSON);
+    Value.JSON := nil;
+  finally
+    Value.Free;
+  end;
   Result := Self;
 end;
 
@@ -673,10 +766,8 @@ begin
 end;
 
 function TJSONParam.Add(const Key: string; Value: TArray<TJSONValue>): TJSONParam;
-var
-  JArr: TJSONArray;
 begin
-  JArr := TJSONArray.Create;
+  var JArr := TJSONArray.Create;
   Fetch<TJSONValue>.All(Value, JArr.AddElement);
   Add(Key, JArr);
   Result := Self;
@@ -684,16 +775,19 @@ end;
 
 function TJSONParam.Add(const Key: string; Value: TArray<TJSONParam>): TJSONParam;
 begin
-  var JArr := TJSONArray.Create;
-  for var Item in Value do
   try
-    JArr.AddElement(Item.JSON);
-    Item.JSON := nil;
-  finally
-    Item.Free;
-  end;
+    var JArr := TJSONArray.Create;
+    for var Item in Value do
+    begin
+      JArr.AddElement(Item.JSON);
+      Item.JSON := nil;
+    end;
 
-  Add(Key, JArr);
+    Add(Key, JArr);
+  finally
+    for var Item in Value do
+      Item.Free;
+  end;
   Result := Self;
 end;
 
