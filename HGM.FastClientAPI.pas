@@ -129,10 +129,12 @@ type
     function Post(const Path: string; Body: TMultipartFormData; Response: TStream): Integer; overload;
     function ParseResponse<T: class, constructor>(const Code: Int64; const ResponseText: string): T;
     procedure CheckAPI;
+    function ParamsToPairs(Params: TJSONParam): TArray<string>;
   public
     function Get<TResult: class, constructor>(const Path: string): TResult; overload;
     function Get<TResult: class, constructor; TParams: TJSONParam>(const Path: string; ParamProc: TProc<TParams>): TResult; overload;
     function GetFile(const Path: string; Response: TStream): Integer; overload;
+    function GetFile<TParams: TJSONParam>(const Path: string; ParamProc: TProc<TParams>; Response: TStream): Integer; overload;
     function Delete<TResult: class, constructor>(const Path: string): TResult; overload;
     function Patch(const Path: string; Body: TJSONObject; Response: TStream; OnReceiveData: TReceiveDataCallback = nil): Integer; overload;
     function Patch<TResult: class, constructor; TParams: TJSONParam>(const Path: string; ParamProc: TProc<TParams>): TResult; overload;
@@ -142,7 +144,7 @@ type
     function PostForm<TResult: class, constructor; TParams: TFastMultipartFormData, constructor>(const Path: string; ParamProc: TProc<TParams>): TResult; overload;
   public
     constructor Create; overload; virtual;
-    constructor Create(const AuthScheme: TAuthorizationScheme; const AuthValue: string); overload; virtual;
+    constructor Create(const AuthScheme: TAuthorizationScheme; const AuthValue: string = ''); overload; virtual;
     destructor Destroy; override;
     property BaseUrl: string read FBaseUrl write SetBaseUrl;
     property NeedCheckToken: Boolean read FNeedCheckToken write SetNeedCheckToken;
@@ -419,19 +421,22 @@ end;
 function TCustomAPI.Get<TResult, TParams>(const Path: string; ParamProc: TProc<TParams>): TResult;
 begin
   var Response := TStringStream.Create('', TEncoding.UTF8);
-  var Params := TParams.Create;
-  try
-    if Assigned(ParamProc) then
+  var QPath := Path;
+  if Assigned(ParamProc) then
+  begin
+    var Params := TParams.Create;
+    try
       ParamProc(Params);
-    var Pairs: TArray<string> := [];
-    for var Pair in Params.ToStringPairs do
-      Pairs := Pairs + [Pair.Key + '=' + Pair.Value];
-    var QPath := Path;
-    if Length(Pairs) > 0 then
-      QPath := QPath + '?' + string.Join('&', Pairs);
+      var Pairs := ParamsToPairs(Params);
+      if Length(Pairs) > 0 then
+        QPath := QPath + '?' + string.Join('&', Pairs);
+    finally
+      Params.Free;
+    end;
+  end;
+  try
     Result := ParseResponse<TResult>(Get(QPath, Response), Response.DataString);
   finally
-    Params.Free;
     Response.Free;
   end;
 end;
@@ -460,14 +465,33 @@ end;
 
 function TCustomAPI.GetFile(const Path: string; Response: TStream): Integer;
 begin
+  Result := GetFile<TJSONParam>(Path, nil, Response);
+end;
+
+function TCustomAPI.GetFile<TParams>(const Path: string; ParamProc: TProc<TParams>; Response: TStream): Integer;
+begin
   CheckAPI;
   var Client := GetClient;
   try
-    Result := Client.Get(GetRequestURL(Path), Response, GetHeaders).StatusCode;
+    var QPath := GetRequestURL(Path);
+    if Assigned(ParamProc) then
+    begin
+      var Params := TParams.Create;
+      try
+        ParamProc(Params);
+        var Pairs := ParamsToPairs(Params);
+        if Length(Pairs) > 0 then
+          QPath := QPath + '?' + string.Join('&', Pairs);
+      finally
+        Params.Free;
+      end;
+    end;
+
+    Result := Client.Get(QPath, Response, GetHeaders).StatusCode;
     if (Result = 401) and CanRequery then
     begin
       Response.Size := 0;
-      Result := Client.Get(GetRequestURL(Path), Response, GetHeaders).StatusCode;
+      Result := Client.Get(QPath, Response, GetHeaders).StatusCode;
     end;
     case Result of
       200..299:
@@ -528,6 +552,13 @@ begin
     raise ExceptionAPI.Create('Token is empty!');
   if FBaseUrl.IsEmpty then
     raise ExceptionAPI.Create('Base url is empty!');
+end;
+
+function TCustomAPI.ParamsToPairs(Params: TJSONParam): TArray<string>;
+begin
+  Result := [];
+  for var Pair in Params.ToStringPairs do
+    Result := Result + [Pair.Key + '=' + Pair.Value];
 end;
 
 procedure TCustomAPI.ParseAndRaiseError(const Code: Int64; const ResponseText: string);
