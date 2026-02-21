@@ -60,74 +60,28 @@ type
   end;
   {$ENDIF}
 
-  TError = class
-  private
-    FMessage: string;
-    FType: string;
-    FParam: string;
-    FCode: Int64;
-  public
-    property Message: string read FMessage write FMessage;
-    property &Type: string read FType write FType;
-    property Param: string read FParam write FParam;
-    property Code: Int64 read FCode write FCode;
-  end;
-
-  TErrorResponse = class
-  private
-    FError: TError;
-  public
-    property Error: TError read FError write FError;
-    destructor Destroy; override;
-  end;
-
-  TSimpleErrorResponse = class
-  private
-    FError: string;
-    FError_description: string;
-  public
-    property Error: string read FError write FError;
-    property ErrorDescription: string read FError_description write FError_description;
-  end;
-
   ExceptionAPI = class(Exception);
 
   ExceptionAPIRequest = class(ExceptionAPI)
   private
     FCode: Int64;
-    FParam: string;
-    FType: string;
+    FText: string;
   public
-    property &Type: string read FType write FType;
     property Code: Int64 read FCode write FCode;
-    property Param: string read FParam write FParam;
-    constructor Create(const Text, &Type: string; const Param: string = ''; Code: Int64 = -1); reintroduce;
+    property Text: string read FText write FText;
+    constructor Create(const Text: string; Code: Int64); reintroduce;
   end;
 
-  /// <summary>
-  /// An InvalidRequestError indicates that your request was malformed or
-  // missing some required parameters, such as a token or an input.
-  // This could be due to a typo, a formatting error, or a logic error in your code.
-  /// </summary>
-  ExceptionInvalidRequestError = class(ExceptionAPIRequest);
+  ExceptionInvalidReponseError = class(ExceptionAPIRequest);
 
-  /// <summary>
-  /// A `RateLimitError` indicates that you have hit your assigned rate limit.
-  /// This means that you have sent too many tokens or requests in a given period of time,
-  /// and our services have temporarily blocked you from sending more.
-  /// </summary>
-  ExceptionRateLimitError = class(ExceptionAPIRequest);
-
-  /// <summary>
-  /// An `AuthenticationError` indicates that your API key or token was invalid,
-  /// expired, or revoked. This could be due to a typo, a formatting error, or a security breach.
-  /// </summary>
-  ExceptionAuthenticationError = class(ExceptionAPIRequest);
-
-  /// <summary>
-  /// This error message indicates that your account is not part of an organization
-  /// </summary>
-  ExceptionPermissionError = class(ExceptionAPIRequest);
+  ExceptionAPIRequest<T: class, constructor> = class(ExceptionAPIRequest)
+  private
+    FError: T;
+  public
+    property Error: T read FError;
+    constructor Create(Error: T; const Text: string; Code: Int64); reintroduce;
+    destructor Destroy; override;
+  end;
 
   /// <summary>
   /// This error message indicates that our servers are experiencing high
@@ -137,10 +91,11 @@ type
 
   ExceptionInvalidResponse = class(ExceptionAPIRequest);
 
+  TAuthorizationScheme = (None, Bearer, Basic, Digest);
+
   {$WARNINGS OFF}
   TCustomAPI = class
   private
-    FAccessToken: string;
     FBaseUrl: string;
 
     FCustomHeaders: TNetHeaders;
@@ -150,11 +105,10 @@ type
     FResponseTimeout: Integer;
     FNeedCheckToken: Boolean;
     FOnAuthErrorCallback: TFunc<Boolean>;
+    FAuthScheme: TAuthorizationScheme;
+    FAuthValue: string;
 
-    procedure SetAccessToken(const Value: string);
     procedure SetBaseUrl(const Value: string);
-    procedure ParseAndRaiseError(Error: TError; Code: Int64);
-    procedure ParseError(const Code: Int64; const ResponseText: string);
     procedure SetCustomHeaders(const Value: TNetHeaders);
     procedure SetProxySettings(const Value: TProxySettings);
     procedure SetConnectionTimeout(const Value: Integer);
@@ -164,6 +118,8 @@ type
     procedure SetOnAuthErrorCallback(const Value: TFunc<Boolean>);
     function CanRequery: Boolean;
   protected
+    procedure ParseAndRaiseError(const Code: Int64; const ResponseText: string); virtual;
+    function GetHeaders: TNetHeaders; virtual;
     function GetClient: THTTPClient; virtual;
     function GetRequestURL(const Path: string): string;
     function Get(const Path: string; Response: TStream): Integer; overload;
@@ -173,11 +129,12 @@ type
     function Post(const Path: string; Body: TMultipartFormData; Response: TStream): Integer; overload;
     function ParseResponse<T: class, constructor>(const Code: Int64; const ResponseText: string): T;
     procedure CheckAPI;
+    function ParamsToPairs(Params: TJSONParam): TArray<string>;
   public
-    function GetHeaders: TNetHeaders; virtual;
     function Get<TResult: class, constructor>(const Path: string): TResult; overload;
     function Get<TResult: class, constructor; TParams: TJSONParam>(const Path: string; ParamProc: TProc<TParams>): TResult; overload;
     function GetFile(const Path: string; Response: TStream): Integer; overload;
+    function GetFile<TParams: TJSONParam>(const Path: string; ParamProc: TProc<TParams>; Response: TStream): Integer; overload;
     function Delete<TResult: class, constructor>(const Path: string): TResult; overload;
     function Patch(const Path: string; Body: TJSONObject; Response: TStream; OnReceiveData: TReceiveDataCallback = nil): Integer; overload;
     function Patch<TResult: class, constructor; TParams: TJSONParam>(const Path: string; ParamProc: TProc<TParams>): TResult; overload;
@@ -187,12 +144,13 @@ type
     function PostForm<TResult: class, constructor; TParams: TFastMultipartFormData, constructor>(const Path: string; ParamProc: TProc<TParams>): TResult; overload;
   public
     constructor Create; overload; virtual;
-    constructor Create(const AToken: string); overload; virtual;
+    constructor Create(const AuthScheme: TAuthorizationScheme; const AuthValue: string = ''); overload; virtual;
     destructor Destroy; override;
-    property AccessToken: string read FAccessToken write SetAccessToken;
     property BaseUrl: string read FBaseUrl write SetBaseUrl;
     property NeedCheckToken: Boolean read FNeedCheckToken write SetNeedCheckToken;
     property OnAuthErrorCallback: TFunc<Boolean> read FOnAuthErrorCallback write SetOnAuthErrorCallback;
+    property AuthScheme: TAuthorizationScheme read FAuthScheme write FAuthScheme;
+    property AuthValue: string read FAuthValue write FAuthValue;
     property ProxySettings: TProxySettings read FProxySettings write SetProxySettings;
     /// <summary> Property to set/get the ConnectionTimeout. Value is in milliseconds.
     ///  -1 - Infinite timeout. 0 - platform specific timeout. Supported by Windows, Linux, Android platforms. </summary>
@@ -206,6 +164,11 @@ type
     property CustomHeaders: TNetHeaders read FCustomHeaders write SetCustomHeaders;
   end;
   {$WARNINGS ON}
+
+  TCustomAPI<TErrorClass: class, constructor> = class(TCustomAPI)
+  protected
+    procedure ParseAndRaiseError(const Code: Int64; const ResponseText: string); override;
+  end;
 
   TAPIRoute = class
   private
@@ -233,15 +196,17 @@ begin
   FConnectionTimeout := TURLClient.DefaultConnectionTimeout;
   FSendTimeout := TURLClient.DefaultSendTimeout;
   FResponseTimeout := TURLClient.DefaultResponseTimeout;
-  FAccessToken := '';
+  FAuthScheme := TAuthorizationScheme.Bearer;
+  FAuthValue := '';
   FBaseUrl := '';
   FNeedCheckToken := False;
 end;
 
-constructor TCustomAPI.Create(const AToken: string);
+constructor TCustomAPI.Create(const AuthScheme: TAuthorizationScheme; const AuthValue: string);
 begin
   Create;
-  AccessToken := AToken;
+  FAuthScheme := AuthScheme;
+  FAuthValue := AuthValue;
 end;
 
 destructor TCustomAPI.Destroy;
@@ -393,7 +358,7 @@ begin
       try
         Response.Position := 0;
         Strings.LoadFromStream(Response);
-        ParseError(Code, Strings.DataString);
+        ParseAndRaiseError(Code, Strings.DataString);
       finally
         Strings.Free;
       end;
@@ -456,19 +421,22 @@ end;
 function TCustomAPI.Get<TResult, TParams>(const Path: string; ParamProc: TProc<TParams>): TResult;
 begin
   var Response := TStringStream.Create('', TEncoding.UTF8);
-  var Params := TParams.Create;
-  try
-    if Assigned(ParamProc) then
+  var QPath := Path;
+  if Assigned(ParamProc) then
+  begin
+    var Params := TParams.Create;
+    try
       ParamProc(Params);
-    var Pairs: TArray<string> := [];
-    for var Pair in Params.ToStringPairs do
-      Pairs := Pairs + [Pair.Key + '=' + Pair.Value];
-    var QPath := Path;
-    if Length(Pairs) > 0 then
-      QPath := QPath + '?' + string.Join('&', Pairs);
+      var Pairs := ParamsToPairs(Params);
+      if Length(Pairs) > 0 then
+        QPath := QPath + '?' + string.Join('&', Pairs);
+    finally
+      Params.Free;
+    end;
+  end;
+  try
     Result := ParseResponse<TResult>(Get(QPath, Response), Response.DataString);
   finally
-    Params.Free;
     Response.Free;
   end;
 end;
@@ -497,14 +465,33 @@ end;
 
 function TCustomAPI.GetFile(const Path: string; Response: TStream): Integer;
 begin
+  Result := GetFile<TJSONParam>(Path, nil, Response);
+end;
+
+function TCustomAPI.GetFile<TParams>(const Path: string; ParamProc: TProc<TParams>; Response: TStream): Integer;
+begin
   CheckAPI;
   var Client := GetClient;
   try
-    Result := Client.Get(GetRequestURL(Path), Response, GetHeaders).StatusCode;
+    var QPath := GetRequestURL(Path);
+    if Assigned(ParamProc) then
+    begin
+      var Params := TParams.Create;
+      try
+        ParamProc(Params);
+        var Pairs := ParamsToPairs(Params);
+        if Length(Pairs) > 0 then
+          QPath := QPath + '?' + string.Join('&', Pairs);
+      finally
+        Params.Free;
+      end;
+    end;
+
+    Result := Client.Get(QPath, Response, GetHeaders).StatusCode;
     if (Result = 401) and CanRequery then
     begin
       Response.Size := 0;
-      Result := Client.Get(GetRequestURL(Path), Response, GetHeaders).StatusCode;
+      Result := Client.Get(QPath, Response, GetHeaders).StatusCode;
     end;
     case Result of
       200..299:
@@ -514,7 +501,7 @@ begin
       try
         Response.Position := 0;
         Strings.LoadFromStream(Response);
-        ParseError(Result, Strings.DataString);
+        ParseAndRaiseError(Result, Strings.DataString);
       finally
         Strings.Free;
       end;
@@ -526,7 +513,23 @@ end;
 
 function TCustomAPI.GetHeaders: TNetHeaders;
 begin
-  Result := [TNetHeader.Create('Authorization', 'Bearer ' + FAccessToken)] + FCustomHeaders;
+  Result := [];
+  if not FAuthValue.IsEmpty then
+  begin
+    var AuthData := '';
+    case FAuthScheme of
+      None:
+        AuthData := FAuthValue;
+      Bearer:
+        AuthData := 'Bearer ' + FAuthValue;
+      Basic:
+        AuthData := 'Basic ' + FAuthValue;
+      Digest:
+        AuthData := 'Digest ' + FAuthValue;
+    end;
+    Result := Result + [TNetHeader.Create('Authorization', AuthData)];
+  end;
+  Result := Result + FCustomHeaders;
 end;
 
 function TCustomAPI.GetRequestURL(const Path: string): string;
@@ -545,77 +548,37 @@ end;
 
 procedure TCustomAPI.CheckAPI;
 begin
-  if FNeedCheckToken and FAccessToken.IsEmpty then
+  if FNeedCheckToken and FAuthValue.IsEmpty then
     raise ExceptionAPI.Create('Token is empty!');
   if FBaseUrl.IsEmpty then
     raise ExceptionAPI.Create('Base url is empty!');
 end;
 
-procedure TCustomAPI.ParseAndRaiseError(Error: TError; Code: Int64);
+function TCustomAPI.ParamsToPairs(Params: TJSONParam): TArray<string>;
 begin
-  case Code of
-    429:
-      raise ExceptionRateLimitError.Create(Error.Message, Error.&Type, Error.Param, Error.Code);
-    400, 404, 415:
-      raise ExceptionInvalidRequestError.Create(Error.Message, Error.&Type, Error.Param, Error.Code);
-    401:
-      raise ExceptionAuthenticationError.Create(Error.Message, Error.&Type, Error.Param, Error.Code);
-    403:
-      raise ExceptionPermissionError.Create(Error.Message, Error.&Type, Error.Param, Error.Code);
-    409:
-      raise ExceptionTryAgain.Create(Error.Message, Error.&Type, Error.Param, Error.Code);
-  else
-    raise ExceptionAPIRequest.Create(Error.Message, Error.&Type, Error.Param, Error.Code);
-  end;
+  Result := [];
+  for var Pair in Params.ToStringPairs do
+    Result := Result + [Pair.Key + '=' + Pair.Value];
 end;
 
-procedure TCustomAPI.ParseError(const Code: Int64; const ResponseText: string);
+procedure TCustomAPI.ParseAndRaiseError(const Code: Int64; const ResponseText: string);
 begin
-  var Error: TErrorResponse := nil;
-  try
-    try
-      Error := TJson.JsonToObject<TErrorResponse>(ResponseText);
-    except
-      try
-        var SimpleError := TJson.JsonToObject<TSimpleErrorResponse>(ResponseText);
-        try
-          Error := TErrorResponse.Create;
-          Error.Error := TError.Create;
-          Error.Error.Message := SimpleError.Error;
-          Error.Error.Code := Code;
-          Error.Error.&Type := SimpleError.ErrorDescription;
-        finally
-          SimpleError.Free;
-        end;
-      except
-        Error := nil;
-      end;
-    end;
-
-    if Assigned(Error) and Assigned(Error.Error) then
-      ParseAndRaiseError(Error.Error, Code)
-    else
-      raise ExceptionAPIRequest.Create('Unknown error. Code: ' + Code.ToString, '', '', Code);
-  finally
-    Error.Free;
-  end;
+  raise ExceptionAPIRequest.Create(ResponseText, Code);
 end;
 
 function TCustomAPI.ParseResponse<T>(const Code: Int64; const ResponseText: string): T;
 begin
   Result := nil;
-  case Code of
-    200..299:
-      try
+  try
+    case Code of
+      200..299:
         Result := TJson.JsonToObject<T>(ResponseText);
-      except
-        Result := nil;
-      end;
-  else
-    ParseError(Code, ResponseText);
+    else
+      raise ExceptionInvalidReponseError.Create(ResponseText, Code);
+    end;
+  except
+    ParseAndRaiseError(Code, ResponseText);
   end;
-  if not Assigned(Result) then
-    raise ExceptionInvalidResponse.Create('Empty or invalid response', '', '', Code);
 end;
 
 procedure TCustomAPI.SetBaseUrl(const Value: string);
@@ -658,19 +621,13 @@ begin
   FSendTimeout := Value;
 end;
 
-procedure TCustomAPI.SetAccessToken(const Value: string);
-begin
-  FAccessToken := Value;
-end;
-
 { ExceptionAPIRequest }
 
-constructor ExceptionAPIRequest.Create(const Text, &Type, Param: string; Code: Int64);
+constructor ExceptionAPIRequest.Create(const Text: string; Code: Int64);
 begin
   inherited Create(Text);
-  Self.&Type := &Type;
+  Self.FText := Text;
   Self.Code := Code;
-  Self.Param := Param;
 end;
 
 { TAPIRoute }
@@ -895,20 +852,40 @@ begin
     Result := Result + [TPair<string, string>.Create(Pair.JsonString.Value, Pair.JsonValue.AsType<string>)];
 end;
 
-{ TErrorResponse }
-
-destructor TErrorResponse.Destroy;
-begin
-  if Assigned(FError) then
-    FError.Free;
-  inherited;
-end;
-
 { TFastMultipartFormData }
 
 constructor TFastMultipartFormData.Create;
 begin
   inherited Create(True);
+end;
+
+{ TCustomAPI<TErrorClass> }
+
+procedure TCustomAPI<TErrorClass>.ParseAndRaiseError(const Code: Int64; const ResponseText: string);
+begin
+  var Error: TErrorClass := nil;
+  try
+    Error := TJson.JsonToObject<TErrorClass>(ResponseText);
+    if Error = nil then
+      Error := TErrorClass.Create;
+  except
+    inherited;
+  end;
+  raise ExceptionAPIRequest<TErrorClass>.Create(Error, ResponseText, Code);
+end;
+
+{ ExceptionAPIRequest<T> }
+
+constructor ExceptionAPIRequest<T>.Create(Error: T; const Text: string; Code: Int64);
+begin
+  inherited Create(Text, Code);
+  FError := Error;
+end;
+
+destructor ExceptionAPIRequest<T>.Destroy;
+begin
+  FError.Free;
+  inherited;
 end;
 
 end.
