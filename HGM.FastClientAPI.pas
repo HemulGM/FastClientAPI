@@ -72,8 +72,6 @@ type
     constructor Create(const Text: string; Code: Int64); reintroduce;
   end;
 
-  ExceptionInvalidReponseError = class(ExceptionAPIRequest);
-
   ExceptionAPIRequest<T: class, constructor> = class(ExceptionAPIRequest)
   private
     FError: T;
@@ -83,13 +81,10 @@ type
     destructor Destroy; override;
   end;
 
-  /// <summary>
-  /// This error message indicates that our servers are experiencing high
-  /// traffic and are unable to process your request at the moment
-  /// </summary>
+  ExceptionInvalidReponseError = class(ExceptionAPIRequest);
   ExceptionTryAgain = class(ExceptionAPIRequest);
-
-  ExceptionInvalidResponse = class(ExceptionAPIRequest);
+  ExceptionAuthenticationError = class(ExceptionAPIRequest);
+  ExceptionPermissionError = class(ExceptionAPIRequest);
 
   TAuthorizationScheme = (None, Bearer, Basic, Digest);
 
@@ -563,7 +558,16 @@ end;
 
 procedure TCustomAPI.ParseAndRaiseError(const Code: Int64; const ResponseText: string);
 begin
-  raise ExceptionAPIRequest.Create(ResponseText, Code);
+  case Code of
+    401:
+      raise ExceptionAuthenticationError.Create(ResponseText, Code);
+    403:
+      raise ExceptionPermissionError.Create(ResponseText, Code);
+    409:
+      raise ExceptionTryAgain.Create(ResponseText, Code);
+  else
+    raise ExceptionAPIRequest.Create(ResponseText, Code);
+  end;
 end;
 
 function TCustomAPI.ParseResponse<T>(const Code: Int64; const ResponseText: string): T;
