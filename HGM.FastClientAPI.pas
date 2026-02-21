@@ -164,7 +164,6 @@ type
     procedure SetOnAuthErrorCallback(const Value: TFunc<Boolean>);
     function CanRequery: Boolean;
   protected
-    function GetHeaders: TNetHeaders; virtual;
     function GetClient: THTTPClient; virtual;
     function GetRequestURL(const Path: string): string;
     function Get(const Path: string; Response: TStream): Integer; overload;
@@ -175,6 +174,7 @@ type
     function ParseResponse<T: class, constructor>(const Code: Int64; const ResponseText: string): T;
     procedure CheckAPI;
   public
+    function GetHeaders: TNetHeaders; virtual;
     function Get<TResult: class, constructor>(const Path: string): TResult; overload;
     function Get<TResult: class, constructor; TParams: TJSONParam>(const Path: string; ParamProc: TProc<TParams>): TResult; overload;
     function GetFile(const Path: string; Response: TStream): Integer; overload;
